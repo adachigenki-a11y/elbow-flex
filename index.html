@@ -153,6 +153,7 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
+renderer.domElement.style.display = 'none';   // VR外ではプレビューを表示しない
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
