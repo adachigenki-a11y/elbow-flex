@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VR肘屈曲課題</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#ffffff; --text:#1d2733; --sub:#5b6875; --accent:#1f7a6d; --line:#dde3e8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; line-height:1.6; }
+  main { max-width:780px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; }
+  h2 { font-size:1.15rem; margin:0 0 10px; }
+  .lead { color:var(--sub); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 18px; }
+  @media (max-width:560px){ .grid { grid-template-columns:1fr; } }
+  label { display:block; font-size:.9rem; color:var(--sub); margin-bottom:4px; }
+  .hint { font-size:.8rem; color:var(--sub); margin-top:2px; }
+  select, input { width:100%; font-size:1.05rem; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); }
+  button { font-size:1.15rem; padding:14px 22px; border:none; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; width:100%; margin-top:18px; }
+  button:disabled { background:#9aa7b2; cursor:not-allowed; }
+  button.secondary { background:#34495e; }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  #status { color:#b23b3b; margin:10px 0 0; min-height:1.2em; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; font-size:.95rem; }
+  td, th { border-bottom:1px solid var(--line); padding:7px 6px; text-align:left; }
+  th { color:var(--sub); font-weight:600; }
+  .hidden { display:none; }
+  .note li { margin-bottom:4px; }
+  canvas { display:none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<main>
+  <h1>VR肘屈曲課題</h1>
+  <p class="lead">座位・机上で行う肘屈曲課題です。VR上の腕は、実際の肘屈曲角度に倍率（ゲイン）をかけて表示されます（Meta Quest 3・ハンドトラッキング推奨）。</p>
+
+  <section class="card" id="settings">
+    <div class="grid">
+      <div>
+        <label for="side">課題側の腕</label>
+        <select id="side">
+          <option value="right" selected>右</option>
+          <option value="left">左</option>
+        </select>
+      </div>
+      <div>
+        <label for="instruct">指示する角度</label>
+        <input id="instruct" type="number" value="90" min="10" max="150" step="5">
+      </div>
+      <div>
+        <label>条件1：一致（倍率）</label>
+        <input id="g1" type="number" value="1.00" step="0.01" min="0.1" max="3">
+        <div class="hint">90°曲げると90°に見える</div>
+      </div>
+      <div>
+        <label>条件2：過小表示（倍率）</label>
+        <input id="g2" type="number" value="0.50" step="0.01" min="0.1" max="3">
+        <div class="hint">0.50 → 90°曲げると45°に見える</div>
+      </div>
+      <div>
+        <label>条件3：過大表示（倍率）</label>
+        <input id="g3" type="number" value="1.67" step="0.01" min="0.1" max="3">
+        <div class="hint">1.67 → 90°曲げると約150°に見える</div>
+      </div>
+      <div>
+        <label for="nPer">各条件の試行数</label>
+        <input id="nPer" type="number" value="3" min="1" max="20" step="1">
+      </div>
+      <div>
+        <label for="order">実施順</label>
+        <select id="order">
+          <option value="fixed" selected>条件1→2→3（各ブロック連続）</option>
+          <option value="block">ブロック順をランダム</option>
+          <option value="random">全試行ランダム</option>
+        </select>
+      </div>
+      <div>
+        <label for="hold">「止めた」と判定する静止時間</label>
+        <select id="hold">
+          <option value="0.8">0.8秒</option>
+          <option value="1.0" selected>1.0秒</option>
+          <option value="1.5">1.5秒</option>
+          <option value="2.0">2.0秒</option>
+        </select>
+      </div>
+      <div>
+        <label for="pid">ID（任意・CSVに記録）</label>
+        <input id="pid" type="text" placeholder="例：P01">
+      </div>
+    </div>
+    <button id="startBtn" disabled>VRで開始</button>
+    <p id="status">確認中…</p>
+  </section>
+
+  <section class="card hidden" id="results">
+    <h2>結果</h2>
+    <div id="summary"></div>
+    <div class="row2">
+      <button id="csvTrials" class="secondary">試行データCSV</button>
+      <button id="csvSeries" class="secondary">時系列CSV（角度推移）</button>
+    </div>
+  </section>
+
+  <section class="card note">
+    <h2>手順</h2>
+    <ol>
+      <li>机に向かって座り、課題側の肘を机につけ、前腕を机の上に置いた姿勢（開始肢位）をとります。</li>
+      <li>「VRで開始」→ ヘッドセット内の指示に従い、<b>反対側の人差し指で課題側の肘頭に触れて2秒静止</b>します（肘の位置と開始肢位を登録）。</li>
+      <li>反対側の手を下ろすと課題が始まります。実際の腕は見えず、VR上の腕だけが見えます。</li>
+      <li>「90°曲げてください」の表示で肘を曲げ、止めて保持すると記録されます（音が鳴ります）。「戻してください」で開始肢位に戻すと次の試行へ進みます。</li>
+      <li>全試行が終わったら、つまむ動作（またはトリガー）でVRを終了し、この画面でCSVを保存します。</li>
+    </ol>
+    <h2>計測について</h2>
+    <ul>
+      <li>肘屈曲角は「肘（登録位置）→手首」のベクトルが開始肢位から何度回転したかで推定します。開始肢位を0°とした角度変化です。</li>
+      <li>課題中に肘が机から浮く・位置がずれると誤差が生じます。肘は机につけたまま行ってください。</li>
+      <li>計測機器としての妥当性は未検証です。研究に用いる場合はゴニオメーター等との比較検証を行ってください。</li>
+    </ul>
+    <h2>安全上の注意</h2>
+    <ul>
+      <li>周囲に物がないことを確認し、安定した椅子で行ってください。めまい・気分不良・痛みが出たら中止してください。</li>
+    </ul>
+  </section>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+const startBtn = $('startBtn');
+const RAD = 180 / Math.PI;
+
+// ---- 判定用の定数 ----
+const REST_DEG = 10;        // これ未満なら開始肢位とみなす
+const REST_SEC = 1.0;       // 開始肢位での静止時間
+const MOVE_MIN_DEG = 30;    // これ以上曲げてから「止めた」判定
+const STILL_DPS = 8;        // 角速度がこれ未満なら静止
+const TRIAL_TIMEOUT = 15;   // 秒
+const CALIB_SEC = 2.0;
+const CALIB_TOL = 0.015;    // m
+const MAX_SHOW_DEG = 175;   // 表示角度の上限
+const LOG_INTERVAL_MS = 20; // 時系列記録 50Hz
+
+// ---- three.js ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d2733);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 2.0));
+const dl = new THREE.DirectionalLight(0xffffff, 1.6);
+dl.position.set(0.5, 3, 1.5);
+scene.add(dl);
+
+const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 64), new THREE.MeshStandardMaterial({ color: 0x2e3b4a, roughness: 1 }));
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+const grid = new THREE.GridHelper(8, 16, 0x4a6078, 0x3a4b5e);
+grid.position.y = 0.002;
+scene.add(grid);
+
+// 机（キャリブレーション後に配置）
+const table = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.04, 0.7), new THREE.MeshStandardMaterial({ color: 0x8a6a4a, roughness: 0.8 }));
+table.visible = false;
+scene.add(table);
+
+// ---- 入力（手・コントローラー） ----
+const inputs = [0, 1].map((i) => {
+  const grip = renderer.xr.getControllerGrip(i);
+  const hand = renderer.xr.getHand(i);
+  const ctrl = renderer.xr.getController(i);
+  scene.add(grip, hand, ctrl);
+  const p = { grip, hand, ctrl, handedness: null };
+  const onConnect = (e) => { if (e.data) p.handedness = e.data.handedness; };
+  grip.addEventListener('connected', onConnect);
+  hand.addEventListener('connected', onConnect);
+  ctrl.addEventListener('connected', onConnect);
+  ctrl.addEventListener('selectstart', onSelect);
+  return p;
+});
+function jointOrGrip(h, joint, out) {
+  const p = inputs.find((q) => q.handedness === h);
+  if (!p) return false;
+  const j = p.hand.joints ? p.hand.joints[joint] : undefined;
+  if (p.hand.visible && j && j.visible) { j.getWorldPosition(out); return 'hand'; }
+  if (p.grip.visible) { p.grip.getWorldPosition(out); return 'controller'; }
+  return false;
+}
+
+// キャリブレーション用マーカー
+const mkMarker = (c) => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 12), new THREE.MeshStandardMaterial({ color: c, emissive: 0x222222 })); m.visible = false; scene.add(m); return m; };
+const tipMarker = mkMarker(0x66aaff);
+const wristMarker = mkMarker(0xffaa55);
+
+// ---- 仮想の腕 ----
+const skin = new THREE.MeshStandardMaterial({ color: 0xe0b896, roughness: 0.6 });
+const sleeve = new THREE.MeshStandardMaterial({ color: 0x4f6d8f, roughness: 0.8 });
+const upperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 1, 20), sleeve);
+const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.028, 1, 20), skin);
+const elbowBall = new THREE.Mesh(new THREE.SphereGeometry(0.042, 20, 14), sleeve);
+const handMesh = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.03, 0.11), skin);
+const arm = new THREE.Group();
+arm.add(upperArm, forearm, elbowBall, handMesh);
+arm.visible = false;
+scene.add(arm);
+const UP = new THREE.Vector3(0, 1, 0);
+function placeLimb(mesh, a, b) {
+  const d = new THREE.Vector3().subVectors(b, a);
+  const len = d.length();
+  mesh.position.copy(a).addScaledVector(d, 0.5);
+  mesh.scale.set(1, len, 1);
+  mesh.quaternion.setFromUnitVectors(UP, d.normalize());
+}
+
+// ---- テキストパネル ----
+function makePanel(w, h, cw = 1024) {
+  const ch = Math.round(cw * h / w);
+  const canvas = document.createElement('canvas');
+  canvas.width = cw; canvas.height = ch;
+  const ctx = canvas.getContext('2d');
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  mesh.userData = { canvas, ctx, tex, last: '' };
+  mesh.visible = false;
+  scene.add(mesh);
+  return mesh;
+}
+function drawPanel(panel, lines) {
+  const key = JSON.stringify(lines);
+  if (key === panel.userData.last) return;
+  panel.userData.last = key;
+  const { canvas, ctx, tex } = panel.userData;
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(14,22,30,0.88)';
+  ctx.beginPath(); ctx.roundRect(4, 4, W - 8, H - 8, 36); ctx.fill();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const total = lines.reduce((s, l) => s + (l.size || 48) * 1.35, 0);
+  let y = (H - total) / 2;
+  for (const l of lines) {
+    const size = l.size || 48;
+    ctx.font = `${l.bold ? 'bold ' : ''}${size}px sans-serif`;
+    ctx.fillStyle = l.color || '#ffffff';
+    y += size * 1.35 / 2;
+    ctx.fillText(l.t, W / 2, y);
+    y += size * 1.35 / 2;
+  }
+  tex.needsUpdate = true;
+}
+const panel = makePanel(1.0, 0.42);
+function panelInFront(dist = 1.1, dy = 0) {
+  const { p, d } = getHead();
+  panel.position.copy(p).addScaledVector(d, dist);
+  panel.position.y = p.y + dy;
+  panel.lookAt(p.x, p.y + dy, p.z);
+}
+
+// ---- 音 ----
+let actx = null;
+function beep(freq, dur = 0.12, vol = 0.25) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'sine'; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, actx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+  o.connect(g).connect(actx.destination);
+  o.start(); o.stop(actx.currentTime + dur);
+}
+
+// ---- 状態 ----
+let state = 'idle';   // idle | calib | handdown | task | done
+let phase = '';       // task内: pause | rest | go | return
+let cfg = null, sessionDate = null;
+let seq = [], idx = 0;
+const E = new THREE.Vector3();      // 肘
+const W0 = new THREE.Vector3();     // 開始肢位の手首
+const v0 = new THREE.Vector3();     // 開始肢位の前腕ベクトル（単位）
+let foreLen = 0.27;
+const shoulder = new THREE.Vector3();
+let axis = null, axisLocked = false;
+let realDeg = 0, shownDeg = 0, omega = 0, lastDeg = 0, lastT = 0, tracked = false, inputKind = '';
+let phaseStart = 0, stillSince = null, restSince = null, peakDeg = 0, goTime = 0;
+let trials = [], series = [], lastLog = 0, taskStart = 0;
+let calibAnchorTip = null, calibAnchorWrist = null, calibSince = 0;
+const tmpTip = new THREE.Vector3(), tmpWrist = new THREE.Vector3();
+
+function getHead() {
+  const p = new THREE.Vector3(); camera.getWorldPosition(p);
+  const d = new THREE.Vector3(); camera.getWorldDirection(d);
+  d.y = 0; if (d.lengthSq() < 1e-6) d.set(0, 0, -1); d.normalize();
+  return { p, d };
+}
+const other = (s) => (s === 'right' ? 'left' : 'right');
+let curGain = 1, curTrial = null;   // 現在表示に使っている倍率と、その試行
+const gainOf = () => curGain;
+
+function readCfg() {
+  const num = (id, def) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : def; };
+  return {
+    side: $('side').value,
+    instruct: num('instruct', 90),
+    gains: [num('g1', 1.0), num('g2', 0.5), num('g3', 1.67)],
+    nPer: Math.max(1, Math.round(num('nPer', 3))),
+    order: $('order').value,
+    hold: num('hold', 1.0),
+    pid: $('pid').value.trim(),
+  };
+}
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function buildSequence() {
+  const conds = cfg.gains.map((g, i) => ({ cond: i + 1, gain: g }));
+  let blocks = cfg.order === 'block' ? shuffle([...conds]) : conds;
+  let s = [];
+  for (const c of blocks) for (let k = 0; k < cfg.nPer; k++) s.push({ ...c, rep: k + 1 });
+  if (cfg.order === 'random') {
+    s = shuffle(s);
+    const cnt = {}; s.forEach((t) => { cnt[t.cond] = (cnt[t.cond] || 0) + 1; t.rep = cnt[t.cond]; });
+  }
+  return s.map((t, i) => ({ ...t, trial: i + 1 }));
+}
+
+// ---- キャリブレーション ----
+function beginCalib() {
+  trials = []; series = []; idx = 0; seq = buildSequence(); curGain = 1; curTrial = null;
+  arm.visible = false; table.visible = false;
+  panel.visible = true; panel.userData.last = '';
+  calibAnchorTip = null; calibAnchorWrist = null;
+  sessionDate = new Date();
+  state = 'calib';
+}
+function updateCalib(now) {
+  panelInFront(1.1, 0.05);
+  const sideJ = cfg.side === 'right' ? '右' : '左';
+  const otherJ = cfg.side === 'right' ? '左' : '右';
+  const okTip = jointOrGrip(other(cfg.side), 'index-finger-tip', tmpTip);
+  const okWr = jointOrGrip(cfg.side, 'wrist', tmpWrist);
+  tipMarker.visible = !!okTip; wristMarker.visible = !!okWr;
+  if (okTip) tipMarker.position.copy(tmpTip);
+  if (okWr) wristMarker.position.copy(tmpWrist);
+
+  let msg2 = `${otherJ}の人差し指で${sideJ}の肘頭に触れ、2秒静止`;
+  let prog = '';
+  if (!okTip || !okWr) {
+    calibAnchorTip = null;
+    prog = !okWr ? `${sideJ}手が認識されていません` : `${otherJ}手が認識されていません`;
+  } else {
+    const len = tmpTip.distanceTo(tmpWrist);
+    const moved = !calibAnchorTip || tmpTip.distanceTo(calibAnchorTip) > CALIB_TOL || tmpWrist.distanceTo(calibAnchorWrist) > CALIB_TOL;
+    if (len < 0.15 || len > 0.45) { calibAnchorTip = null; prog = '肘に指先を当ててください'; }
+    else if (moved) { calibAnchorTip = tmpTip.clone(); calibAnchorWrist = tmpWrist.clone(); calibSince = now; prog = '静止してください'; }
+    else {
+      const rem = CALIB_SEC - (now - calibSince) / 1000;
+      prog = `登録中… ${Math.max(0, rem).toFixed(1)} 秒`;
+      if (rem <= 0) { finishCalib(); return; }
+    }
+  }
+  drawPanel(panel, [
+    { t: `${sideJ}肘を机につき、前腕を机に置いてください`, size: 50, bold: true },
+    { t: msg2, size: 46, color: '#7fe3b8' },
+    { t: prog, size: 42, color: '#b8c4cf' },
+  ]);
+}
+function finishCalib() {
+  E.copy(calibAnchorTip); W0.copy(calibAnchorWrist);
+  v0.subVectors(W0, E); foreLen = v0.length(); v0.normalize();
+  const { p, d } = getHead();
+  const rightV = new THREE.Vector3().crossVectors(d, UP).normalize();
+  shoulder.copy(p).addScaledVector(rightV, cfg.side === 'right' ? 0.18 : -0.18);
+  shoulder.y = p.y - 0.25;
+  // 肘より上に肩がない場合の保険
+  if (shoulder.y < E.y + 0.15) shoulder.y = E.y + 0.25;
+  table.position.set(p.x, E.y - 0.045, p.z).addScaledVector(d, 0.45);
+  table.position.y = E.y - 0.045;
+  table.rotation.y = Math.atan2(d.x, d.z);
+  table.visible = true;
+  tipMarker.visible = false; wristMarker.visible = false;
+  beep(880, 0.15);
+  state = 'handdown'; phaseStart = performance.now();
+}
+function updateHanddown(now) {
+  panelInFront(1.2, 0.05);
+  drawPanel(panel, [
+    { t: '登録しました', size: 56, bold: true, color: '#7fe3b8' },
+    { t: '反対の手を下ろし、楽にしてください', size: 46 },
+  ]);
+  if ((now - phaseStart) / 1000 > 2.5) {
+    arm.visible = true; taskStart = now; lastT = now;
+    enterPhase('pause', now);
+    state = 'task';
+  }
+}
+
+// ---- 角度推定と仮想腕 ----
+function updateAngle(now) {
+  const kind = jointOrGrip(cfg.side, 'wrist', tmpWrist);
+  tracked = !!kind;
+  if (kind) {
+    inputKind = kind;
+    const v = new THREE.Vector3().subVectors(tmpWrist, E);
+    if (v.lengthSq() > 1e-6) {
+      v.normalize();
+      realDeg = Math.acos(THREE.MathUtils.clamp(v.dot(v0), -1, 1)) * RAD;
+      const ax = new THREE.Vector3().crossVectors(v0, v);
+      if (!axisLocked && ax.lengthSq() > 1e-6 && realDeg > 3) {
+        axis = ax.normalize();
+        if (realDeg > 15) axisLocked = true;
+      }
+    }
+  }
+  const dt = Math.max(1e-3, (now - lastT) / 1000);
+  const inst = Math.abs(realDeg - lastDeg) / dt;
+  omega = omega * 0.8 + inst * 0.2;
+  lastDeg = realDeg; lastT = now;
+
+  shownDeg = Math.min(MAX_SHOW_DEG, realDeg * gainOf());
+  const dir = v0.clone();
+  if (axis) dir.applyAxisAngle(axis, shownDeg / RAD);
+  const Wv = E.clone().addScaledVector(dir, foreLen);
+  placeLimb(upperArm, E, shoulder);
+  placeLimb(forearm, E, Wv);
+  elbowBall.position.copy(E);
+  handMesh.position.copy(Wv).addScaledVector(dir, 0.055);
+  handMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+}
+
+// ---- 課題の進行 ----
+function enterPhase(p, now) { phase = p; phaseStart = now; stillSince = null; restSince = null; panel.userData.last = ''; }
+
+function updateTask(now) {
+  updateAngle(now);
+  panelInFront(1.3, 0.1);
+  const t = seq[idx];
+
+  if (phase === 'pause') {
+    const first = idx === 0;
+    drawPanel(panel, [
+      { t: first ? 'これから課題を始めます' : '次のブロックに進みます', size: 52, bold: true },
+      { t: `全 ${seq.length} 試行`, size: 44, color: '#b8c4cf' },
+    ]);
+    if ((now - phaseStart) / 1000 > 3) enterPhase('rest', now);
+  } else if (phase === 'rest' || phase === 'return') {
+    drawPanel(panel, [
+      { t: phase === 'return' ? 'ゆっくり元の位置に戻してください' : '開始位置で力を抜いてください', size: 52, bold: true },
+      { t: `試行 ${idx + 1} / ${seq.length}`, size: 42, color: '#b8c4cf' },
+    ]);
+    if (tracked && realDeg < REST_DEG) {
+      if (restSince === null) restSince = now;
+      if ((now - restSince) / 1000 >= REST_SEC) {
+        if (pendingPause) { pendingPause = false; enterPhase('pause', now); }
+        else {
+          // 開始肢位にいる間に次試行の倍率へ切り替える
+          curGain = t.gain; curTrial = t;
+          axis = null; axisLocked = false; peakDeg = 0; goTime = now;
+          enterPhase('go', now);
+          beep(660, 0.15);
+        }
+      }
+    } else restSince = null;
+  } else if (phase === 'go') {
+    drawPanel(panel, [
+      { t: `肘を ${cfg.instruct}° 曲げてください`, size: 64, bold: true, color: '#7fe3b8' },
+      { t: '止めたらそのまま保持', size: 42, color: '#b8c4cf' },
+    ]);
+    peakDeg = Math.max(peakDeg, realDeg);
+    if (realDeg > MOVE_MIN_DEG && omega < STILL_DPS) {
+      if (stillSince === null) stillSince = now;
+      if ((now - stillSince) / 1000 >= cfg.hold) recordTrial(now, 'ok');
+    } else stillSince = null;
+    if (phase === 'go' && (now - goTime) / 1000 > TRIAL_TIMEOUT) recordTrial(now, 'timeout');
+  }
+
+  if (now - lastLog >= LOG_INTERVAL_MS && curTrial) {
+    lastLog = now;
+    series.push({
+      time_s: ((now - taskStart) / 1000).toFixed(3), trial: curTrial.trial, condition: curTrial.cond, gain: curGain,
+      phase, real_deg: realDeg.toFixed(1), shown_deg: shownDeg.toFixed(1), tracked: tracked ? 1 : 0,
+    });
+  }
+}
+
+function recordTrial(now, status) {
+  const t = seq[idx];
+  trials.push({
+    trial: t.trial, condition: t.cond, rep: t.rep, gain: t.gain, instructed_deg: cfg.instruct,
+    real_deg: realDeg.toFixed(1), shown_deg: shownDeg.toFixed(1), peak_real_deg: peakDeg.toFixed(1),
+    time_s: ((now - goTime) / 1000).toFixed(2), status, input: inputKind,
+  });
+  beep(1046, 0.12);
+  if (idx + 1 >= seq.length) { finish(); return; }
+  const changed = seq[idx + 1].cond !== t.cond && cfg.order !== 'random';
+  idx++;
+  pendingPause = changed;   // ブロックが変わるときは戻した後に案内を挟む
+  enterPhase('return', now);
+}
+let pendingPause = false;
+
+function finish() {
+  state = 'done';
+  arm.visible = true;
+  panelInFront(1.2, 0.05);
+  drawPanel(panel, [
+    { t: 'おつかれさまでした', size: 60, bold: true, color: '#7fe3b8' },
+    { t: `${trials.length} 試行を記録しました`, size: 48 },
+    { t: 'つまむ動作／トリガーでVRを終了', size: 40, color: '#b8c4cf' },
+  ]);
+  beep(784, 0.15); setTimeout(() => beep(1046, 0.25), 170);
+  showResults();
+}
+
+function onSelect() {
+  if (state === 'done') { const s = renderer.xr.getSession(); if (s) s.end(); }
+}
+function onSessionEnd() {
+  if (state === 'task' && trials.length) showResults();
+  state = 'idle';
+  panel.visible = false; arm.visible = false; table.visible = false;
+  tipMarker.visible = false; wristMarker.visible = false;
+  startBtn.disabled = false;
+  if (trials.length) $('results').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ---- 結果・CSV ----
+function showResults() {
+  const byCond = cfg.gains.map((g, i) => {
+    const tt = trials.filter((t) => t.condition === i + 1);
+    const r = tt.map((t) => +t.real_deg), s = tt.map((t) => +t.shown_deg);
+    const m = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+    const sd = (a) => { if (a.length < 2) return null; const mm = m(a); return Math.sqrt(a.reduce((x, y) => x + (y - mm) ** 2, 0) / (a.length - 1)); };
+    return { cond: i + 1, gain: g, n: tt.length, mr: m(r), sr: sd(r), ms: m(s) };
+  });
+  const f = (v) => (v === null ? '—' : v.toFixed(1) + '°');
+  const condName = ['一致', '過小表示', '過大表示'];
+  let html = `<table><tr><th>条件</th><th>倍率</th><th>n</th><th>実際の角度 平均（SD）</th><th>表示角度 平均</th></tr>`;
+  for (const c of byCond) html += `<tr><td>${c.cond}：${condName[c.cond - 1]}</td><td>×${c.gain}</td><td>${c.n}</td><td>${f(c.mr)}（${c.sr === null ? '—' : c.sr.toFixed(1)}）</td><td>${f(c.ms)}</td></tr>`;
+  html += `</table><h2 style="margin-top:18px">試行ごと</h2><table><tr><th>試行</th><th>条件</th><th>実際</th><th>表示</th><th>最大</th><th>時間</th><th>判定</th></tr>`;
+  for (const t of trials) html += `<tr><td>${t.trial}</td><td>${t.condition}-${t.rep}</td><td>${t.real_deg}°</td><td>${t.shown_deg}°</td><td>${t.peak_real_deg}°</td><td>${t.time_s}s</td><td>${t.status === 'ok' ? '保持' : '時間切れ'}</td></tr>`;
+  html += `</table>`;
+  $('summary').innerHTML = html;
+  $('results').classList.remove('hidden');
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function downloadCSV(rows, cols, name) {
+  const d = sessionDate;
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const meta = { id: cfg.pid, datetime: d.toISOString(), side: cfg.side, order: cfg.order };
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const header = [...Object.keys(meta), ...cols].join(',');
+  const body = rows.map((r) => [...Object.values(meta), ...cols.map((c) => r[c])].map(q).join(','));
+  const blob = new Blob(['﻿' + [header, ...body].join('\r\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `elbow_${name}_${cfg.pid ? cfg.pid + '_' : ''}${stamp}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+$('csvTrials').addEventListener('click', () => downloadCSV(trials,
+  ['trial', 'condition', 'rep', 'gain', 'instructed_deg', 'real_deg', 'shown_deg', 'peak_real_deg', 'time_s', 'status', 'input'], 'trials'));
+$('csvSeries').addEventListener('click', () => downloadCSV(series,
+  ['time_s', 'trial', 'condition', 'gain', 'phase', 'real_deg', 'shown_deg', 'tracked'], 'series'));
+
+// ---- 開始 ----
+startBtn.addEventListener('click', async () => {
+  cfg = readCfg();
+  startBtn.disabled = true; statusEl.textContent = '';
+  $('results').classList.add('hidden');
+  try { actx = actx || new AudioContext(); await actx.resume(); } catch (e) { /* 音なしで続行 */ }
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'hand-tracking'] });
+    session.addEventListener('end', onSessionEnd);
+    await renderer.xr.setSession(session);
+    pendingPause = false; curGain = 1; curTrial = null;
+    beginCalib();
+  } catch (e) {
+    statusEl.textContent = 'VRを開始できませんでした：' + e.message;
+    startBtn.disabled = false;
+  }
+});
+
+if (!('xr' in navigator)) {
+  statusEl.textContent = 'このブラウザはWebXR非対応です。Quest 3のブラウザで開いてください（https のページである必要があります）。';
+} else {
+  navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
+    if (ok) { startBtn.disabled = false; statusEl.textContent = ''; }
+    else statusEl.textContent = 'この端末ではVRモードが使えません。Quest 3のブラウザで開いてください。';
+  }).catch(() => { statusEl.textContent = 'VR対応の確認に失敗しました。'; });
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  if (state === 'calib') updateCalib(now);
+  else if (state === 'handdown') updateHanddown(now);
+  else if (state === 'task') updateTask(now);
+  else if (state === 'done') updateAngle(now);
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
