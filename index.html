@@ -29,6 +29,13 @@
   .hidden { display:none; }
   .note li { margin-bottom:4px; }
   canvas { display:none; }
+  input[type=range] { padding:0; border:none; height:28px; accent-color:var(--accent); }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 4px; }
+  .btnrow button { width:auto; flex:1; margin-top:0; font-size:.95rem; padding:9px 10px; background:#e8eef2; color:var(--text); border:1px solid var(--line); }
+  .btnrow button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .pvrow { margin-top:12px; }
+  #pvBox { margin-top:14px; border-radius:10px; overflow:hidden; background:#1d2733; }
+  #pvBox canvas { display:block; }
 </style>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -105,6 +112,32 @@
     <p id="status">確認中…</p>
   </section>
 
+  <section class="card" id="previewCard">
+    <h2>表示の確認（VRに入る前に）</h2>
+    <p class="hint" style="margin:0">スライダーで肘の角度を動かすと、VR内の見え方を確認できます（課題側の腕・指示角度・モニターは上の設定を使用）。</p>
+    <div class="pvrow">
+      <label for="pvDeg">実際の肘屈曲角度（シミュレーション）：<b id="pvDegLbl">0°</b>　→　VR上の見え方：<b id="pvShownLbl">0°</b></label>
+      <input type="range" id="pvDeg" min="0" max="150" step="1" value="0">
+    </div>
+    <div class="pvrow">
+      <label for="pvGain">確認用ゲイン：<b id="pvGainLbl">×1.00</b></label>
+      <input type="range" id="pvGain" min="0.2" max="2.5" step="0.01" value="1">
+      <div class="btnrow">
+        <button type="button" data-g="g1">条件1</button>
+        <button type="button" data-g="g2">条件2</button>
+        <button type="button" data-g="g3">条件3</button>
+      </div>
+    </div>
+    <div class="pvrow">
+      <label>視点</label>
+      <div class="btnrow" id="pvViewBtns">
+        <button type="button" data-v="eye" class="on">被験者の目線</button>
+        <button type="button" data-v="side">横から</button>
+      </div>
+    </div>
+    <div id="pvBox"></div>
+  </section>
+
   <section class="card hidden" id="results">
     <h2>結果</h2>
     <div id="summary"></div>
@@ -161,8 +194,9 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
-renderer.domElement.style.display = 'none';   // VR外ではプレビューを表示しない
-document.body.appendChild(renderer.domElement);
+// VR外では「表示の確認」欄の中にプレビューとして表示する
+renderer.domElement.style.display = 'block';
+document.getElementById('pvBox').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1d2733);
@@ -466,6 +500,7 @@ function buildSequence() {
 // ---- キャリブレーション ----
 function beginCalib() {
   trials = []; series = []; idx = 0; seq = buildSequence(); curGain = 1; curTrial = null;
+  axis = null; axisLocked = false; realDeg = 0; shownDeg = 0;
   arm.visible = false; table.visible = false; monitorPlaced = false;
   panel.visible = true; panel.userData.last = '';
   calibAnchorTip = null; calibAnchorWrist = null;
@@ -712,6 +747,7 @@ function onSessionEnd() {
   panel.visible = false; arm.visible = false; table.visible = false; monitor.visible = false; monitorPlaced = false;
   tipMarker.visible = false; wristMarker.visible = false;
   startBtn.disabled = false;
+  setTimeout(sizePreview, 0);
   if (trials.length) $('results').scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -782,14 +818,77 @@ if (!('xr' in navigator)) {
   }).catch(() => { statusEl.textContent = 'VR対応の確認に失敗しました。'; });
 }
 
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+// ---- 表示の確認（VRに入る前のシミュレーション） ----
+const pvBox = $('pvBox');
+let pvView = 'eye';
+function sizePreview() {
+  if (renderer.xr.isPresenting) return;
+  const w = Math.max(200, pvBox.clientWidth);
+  const h = Math.round(w * 0.62);
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
+}
+window.addEventListener('resize', sizePreview);
+sizePreview();
+function updatePvLabels() {
+  const deg = +$('pvDeg').value, g = +$('pvGain').value;
+  $('pvDegLbl').textContent = `${deg}°`;
+  $('pvGainLbl').textContent = `×${g.toFixed(2)}`;
+  $('pvShownLbl').textContent = `${Math.round(Math.min(MAX_SHOW_DEG, deg * g))}°`;
+  document.querySelectorAll('[data-g]').forEach((b) => b.classList.toggle('on', Math.abs(parseFloat($(b.dataset.g).value) - g) < 0.005));
+}
+['pvDeg', 'pvGain', 'g1', 'g2', 'g3'].forEach((id) => $(id).addEventListener('input', updatePvLabels));
+document.querySelectorAll('[data-g]').forEach((b) => b.addEventListener('click', () => {
+  $('pvGain').value = parseFloat($(b.dataset.g).value) || 1; updatePvLabels();
+}));
+document.querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => {
+  pvView = b.dataset.v;
+  document.querySelectorAll('[data-v]').forEach((x) => x.classList.toggle('on', x === b));
+}));
+updatePvLabels();
+
+const PV_HEAD = new THREE.Vector3(0, 1.22, 0), PV_FWD = new THREE.Vector3(0, 0, -1);
+function renderPreview() {
+  const saved = cfg;
+  cfg = readCfg();
+  const sgn = cfg.side === 'right' ? 1 : -1;
+  // VR内での典型的な配置（座位・肘を机につけた状態）を仮に置く
+  E.set(0.17 * sgn, 0.76, -0.12);
+  v0.set(0, 0, -1); foreLen = 0.27;
+  shoulder.set(0.18 * sgn, 0.98, 0.02);
+  table.position.set(0, 0.715, -0.4); table.rotation.y = 0; table.visible = true;
+  placeMonitor(PV_HEAD, PV_FWD);
+  axis = new THREE.Vector3().crossVectors(v0, UP).normalize(); axisLocked = true;
+  curGain = +$('pvGain').value; realDeg = +$('pvDeg').value;
+  arm.visible = true;
+  updateAngle(performance.now());
+  realDeg = +$('pvDeg').value;   // 追跡入力がないため値を固定
+  panel.visible = pvView === 'eye';
+  panel.position.set(0, 1.32, -1.3); panel.lookAt(0, 1.32, 0);
+  drawPanel(panel, [
+    { t: `肘を ${cfg.instruct}° 曲げてください`, size: 64, bold: true, color: '#7fe3b8' },
+    { t: '止めたらそのまま保持', size: 42, color: '#b8c4cf' },
+  ]);
+  renderMonitor();
+  if (pvView === 'side') {
+    const a = sideCam.aspect;
+    sideCam.aspect = camera.aspect; sideCam.updateProjectionMatrix();
+    monitor.visible = false;
+    renderer.render(scene, sideCam);
+    sideCam.aspect = a; sideCam.updateProjectionMatrix();
+  } else {
+    camera.fov = 90; camera.updateProjectionMatrix();
+    camera.position.copy(PV_HEAD);
+    camera.lookAt(-0.06, 0.80, -1.0);
+    renderer.render(scene, camera);
+  }
+  cfg = saved;
+}
 
 renderer.setAnimationLoop(() => {
   const now = performance.now();
+  if (!renderer.xr.isPresenting && state === 'idle') { renderPreview(); return; }
   if (state === 'calib') updateCalib(now);
   else if (state === 'handdown') updateHanddown(now);
   else if (state === 'task') updateTask(now);
