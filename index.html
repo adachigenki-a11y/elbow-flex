@@ -302,7 +302,7 @@ arm.add(handGroup);
 const HP = {};   // 関節名 → 描画位置
 for (const n of JOINTS) HP[n] = new THREE.Vector3();
 
-// コントローラー使用時などの代替：軽く指を曲げた手の形（手首基準のローカル座標、x=母指側, y=手背側, z=指先方向）
+// コントローラー使用時・表示の確認での代替：軽く指を曲げた手の形（手掌面を上に向けて配置）（手首基準のローカル座標、x=母指側, y=手背側, z=指先方向）
 const STATIC_HAND = (() => {
   const P = { 'wrist': [0, 0, 0] };
   const flex = (start, dirZ, lens, angs, name, segs) => {
@@ -608,8 +608,9 @@ function updateAngle(now) {
     const dir = v0.clone();
     if (axis) dir.applyAxisAngle(axis, shownDeg / RAD);
     const lat = (axis ? axis.clone() : new THREE.Vector3().crossVectors(v0, UP)).normalize();
-    const thumbSide = cfg.side === 'right' ? lat.clone().negate() : lat.clone();
-    const dorsal = new THREE.Vector3().crossVectors(lat, dir).normalize();
+    // 前腕回外位（手掌面を上）：母指は外側、手背は机側
+    const thumbSide = cfg.side === 'right' ? lat.clone() : lat.clone().negate();
+    const dorsal = new THREE.Vector3().crossVectors(dir, lat).normalize();
     const Wv = E.clone().addScaledVector(dir, foreLen);
     for (const n of JOINTS) {
       const [x, y, z] = STATIC_HAND[n];
