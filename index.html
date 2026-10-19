@@ -89,6 +89,14 @@
         </select>
       </div>
       <div>
+        <label for="monitor">横からのモニター画面</label>
+        <select id="monitor">
+          <option value="on" selected>表示する（視野の左上）</option>
+          <option value="off">表示しない</option>
+        </select>
+        <div class="hint">VR上の腕（倍率をかけた角度）を横から映す</div>
+      </div>
+      <div>
         <label for="pid">ID（任意・CSVに記録）</label>
         <input id="pid" type="text" placeholder="例：P01">
       </div>
@@ -205,17 +213,91 @@ const tipMarker = mkMarker(0x66aaff);
 const wristMarker = mkMarker(0xffaa55);
 
 // ---- 仮想の腕 ----
-const skin = new THREE.MeshStandardMaterial({ color: 0xe0b896, roughness: 0.6 });
-const sleeve = new THREE.MeshStandardMaterial({ color: 0x4f6d8f, roughness: 0.8 });
-const upperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 1, 20), sleeve);
-const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.028, 1, 20), skin);
-const elbowBall = new THREE.Mesh(new THREE.SphereGeometry(0.042, 20, 14), sleeve);
-const handMesh = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.03, 0.11), skin);
+const skin = new THREE.MeshStandardMaterial({ color: 0xe3b493, roughness: 0.55, metalness: 0.0 });
+const sleeve = new THREE.MeshStandardMaterial({ color: 0x4f6d8f, roughness: 0.85 });
+const upperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.044, 1, 28), sleeve);
+// 前腕：肘側が太く手首側が細い形（肘・手首を球で丸める）
+const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.040, 1, 28), skin);
+const elbowBall = new THREE.Mesh(new THREE.SphereGeometry(0.044, 24, 16), sleeve);
+const wristBall = new THREE.Mesh(new THREE.SphereGeometry(0.0255, 20, 14), skin);
 const arm = new THREE.Group();
-arm.add(upperArm, forearm, elbowBall, handMesh);
+arm.add(upperArm, forearm, elbowBall, wristBall);
 arm.visible = false;
 scene.add(arm);
 const UP = new THREE.Vector3(0, 1, 0);
+// ---- 手（指の形あり）：関節を球、骨を円柱でつないで描く ----
+const FINGERS = ['thumb', 'index-finger', 'middle-finger', 'ring-finger', 'pinky-finger'];
+const CHAIN = {
+  'thumb': ['metacarpal', 'phalanx-proximal', 'phalanx-distal', 'tip'],
+  'index-finger': ['metacarpal', 'phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'],
+  'middle-finger': ['metacarpal', 'phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'],
+  'ring-finger': ['metacarpal', 'phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'],
+  'pinky-finger': ['metacarpal', 'phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'],
+};
+const JOINTS = ['wrist'];
+const BONES = [];   // [親関節名, 子関節名, 太さ係数]
+for (const f of FINGERS) {
+  let prev = 'wrist';
+  CHAIN[f].forEach((seg, i) => {
+    const name = `${f}-${seg}`;
+    JOINTS.push(name);
+    // 中手骨（手のひら内）は手のひらメッシュで覆うので細く
+    BONES.push([prev, name, (i === 0 && f !== 'thumb') ? 0.6 : 1.0]);
+    prev = name;
+  });
+}
+const BASE_R = { 'thumb': 0.0115, 'index-finger': 0.0095, 'middle-finger': 0.0100, 'ring-finger': 0.0094, 'pinky-finger': 0.0083 };
+function jointR(name) {
+  if (name === 'wrist') return 0.02;
+  const f = FINGERS.find((x) => name.startsWith(x));
+  const k = name.endsWith('tip') ? 0.78 : name.includes('distal') ? 0.85 : name.includes('intermediate') ? 0.92 : 1.0;
+  return BASE_R[f] * k;
+}
+const sphG = new THREE.SphereGeometry(1, 14, 10);
+const cylG = new THREE.CylinderGeometry(1, 1, 1, 14);
+const handGroup = new THREE.Group();
+const jointMesh = {};
+for (const n of JOINTS) {
+  if (n === 'wrist') continue;
+  const m = new THREE.Mesh(sphG, skin); m.scale.setScalar(jointR(n)); handGroup.add(m); jointMesh[n] = m;
+}
+const boneMesh = BONES.map(([a, b, k]) => { const m = new THREE.Mesh(cylG, skin); handGroup.add(m); return { a, b, k, m }; });
+const palm = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), skin);
+handGroup.add(palm);
+arm.add(handGroup);
+const HP = {};   // 関節名 → 描画位置
+for (const n of JOINTS) HP[n] = new THREE.Vector3();
+
+// コントローラー使用時などの代替：軽く指を曲げた手の形（手首基準のローカル座標、x=母指側, y=手背側, z=指先方向）
+const STATIC_HAND = (() => {
+  const P = { 'wrist': [0, 0, 0] };
+  const flex = (start, dirZ, lens, angs, name, segs) => {
+    let p = new THREE.Vector3(...start), d = new THREE.Vector3(...dirZ).normalize(), a = 0;
+    lens.forEach((L, i) => {
+      a += angs[i];
+      const dd = d.clone().applyAxisAngle(new THREE.Vector3(1, 0, 0), a);  // 手掌側へ曲げる
+      p = p.clone().addScaledVector(dd, L);
+      P[`${name}-${segs[i]}`] = p.toArray();
+    });
+  };
+  const fs = [
+    ['index-finger', [0.022, 0, 0.088], [0.041, 0.024, 0.019], 0.10],
+    ['middle-finger', [0.004, 0, 0.092], [0.045, 0.028, 0.021], 0.0],
+    ['ring-finger', [-0.014, 0, 0.086], [0.041, 0.026, 0.020], -0.10],
+    ['pinky-finger', [-0.030, 0, 0.074], [0.033, 0.020, 0.018], -0.20],
+  ];
+  for (const [n, k, L, spread] of fs) {
+    P[`${n}-metacarpal`] = [k[0] * 0.35, 0, 0.012];
+    P[`${n}-phalanx-proximal`] = k;
+    flex(k, [spread, 0, 1], L, [0.22, 0.38, 0.22], n, ['phalanx-intermediate', 'phalanx-distal', 'tip']);
+  }
+  P['thumb-metacarpal'] = [0.020, -0.006, 0.018];
+  P['thumb-phalanx-proximal'] = [0.042, -0.014, 0.052];
+  flex(P['thumb-phalanx-proximal'], [0.45, -0.15, 1], [0.032, 0.027], [0.1, 0.2], 'thumb', ['phalanx-distal', 'tip']);
+  return P;
+})();
+
+const _q = new THREE.Quaternion();
 function placeLimb(mesh, a, b) {
   const d = new THREE.Vector3().subVectors(b, a);
   const len = d.length();
@@ -260,7 +342,55 @@ function drawPanel(panel, lines) {
   }
   tex.needsUpdate = true;
 }
-const panel = makePanel(1.0, 0.42);
+const panel = makePanel(0.8, 0.336);
+
+// ---- 横からのモニター画面（別カメラの映像を板に貼る） ----
+const monTarget = new THREE.WebGLRenderTarget(640, 480);
+monTarget.texture.colorSpace = THREE.SRGBColorSpace;
+const sideCam = new THREE.PerspectiveCamera(38, 640 / 480, 0.05, 10);
+const monitor = new THREE.Group();
+const MON_W = 0.46, MON_H = MON_W * 0.75;
+const monFrame = new THREE.Mesh(new THREE.PlaneGeometry(MON_W + 0.03, MON_H + 0.07), new THREE.MeshBasicMaterial({ color: 0x0b1118 }));
+const monScreen = new THREE.Mesh(new THREE.PlaneGeometry(MON_W, MON_H), new THREE.MeshBasicMaterial({ map: monTarget.texture }));
+monScreen.position.set(0, -0.015, 0.002);
+const monLabelCanvas = document.createElement('canvas'); monLabelCanvas.width = 512; monLabelCanvas.height = 48;
+{ const c = monLabelCanvas.getContext('2d'); c.fillStyle = '#b8c4cf'; c.font = '32px sans-serif'; c.textBaseline = 'middle'; c.fillText('横から見た腕', 8, 26); }
+const monLabelTex = new THREE.CanvasTexture(monLabelCanvas); monLabelTex.colorSpace = THREE.SRGBColorSpace;
+const monLabel = new THREE.Mesh(new THREE.PlaneGeometry(MON_W, MON_W * 48 / 512), new THREE.MeshBasicMaterial({ map: monLabelTex, transparent: true }));
+monLabel.position.set(0, MON_H / 2 + 0.008, 0.002);
+monitor.add(monFrame, monScreen, monLabel);
+monitor.visible = false;
+scene.add(monitor);
+let monitorPlaced = false;
+function placeMonitor(p, d) {
+  // 開始時の頭の位置から見て、左上（左に約30°、上に約10°）に固定
+  const rightV = new THREE.Vector3().crossVectors(d, UP).normalize();
+  monitor.position.copy(p).addScaledVector(d, 1.05).addScaledVector(rightV, -0.62);
+  monitor.position.y = p.y + 0.18;
+  monitor.lookAt(p.x, p.y + 0.05, p.z);
+  monitorPlaced = true;
+}
+function renderMonitor() {
+  monitor.visible = !!(cfg && cfg.monitor === 'on' && monitorPlaced && arm.visible);
+  if (!monitor.visible) return;
+  // 屈曲軸の方向（腕の外側）から肘を見る
+  const ax = (axis ? axis.clone() : new THREE.Vector3().crossVectors(v0, UP)).normalize();
+  if (cfg.side === 'left') ax.negate();
+  // 0°〜150°まで前腕と手が収まる範囲を映す
+  const look = E.clone().addScaledVector(v0, 0.05).addScaledVector(UP, 0.20);
+  sideCam.position.copy(look).addScaledVector(ax, 1.0);
+  sideCam.up.copy(UP);
+  sideCam.lookAt(look);
+  const hide = [monitor, panel, tipMarker, wristMarker].map((o) => [o, o.visible]);
+  hide.forEach(([o]) => (o.visible = false));
+  const xrOn = renderer.xr.enabled;
+  renderer.xr.enabled = false;
+  renderer.setRenderTarget(monTarget);
+  renderer.render(scene, sideCam);
+  renderer.setRenderTarget(null);
+  renderer.xr.enabled = xrOn;
+  hide.forEach(([o, v]) => (o.visible = v));
+}
 function panelInFront(dist = 1.1, dy = 0) {
   const { p, d } = getHead();
   panel.position.copy(p).addScaledVector(d, dist);
@@ -317,6 +447,7 @@ function readCfg() {
     order: $('order').value,
     hold: num('hold', 1.0),
     pid: $('pid').value.trim(),
+    monitor: $('monitor').value,
   };
 }
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
@@ -335,7 +466,7 @@ function buildSequence() {
 // ---- キャリブレーション ----
 function beginCalib() {
   trials = []; series = []; idx = 0; seq = buildSequence(); curGain = 1; curTrial = null;
-  arm.visible = false; table.visible = false;
+  arm.visible = false; table.visible = false; monitorPlaced = false;
   panel.visible = true; panel.userData.last = '';
   calibAnchorTip = null; calibAnchorWrist = null;
   sessionDate = new Date();
@@ -386,6 +517,7 @@ function finishCalib() {
   table.position.y = E.y - 0.045;
   table.rotation.y = Math.atan2(d.x, d.z);
   table.visible = true;
+  placeMonitor(p, d);
   tipMarker.visible = false; wristMarker.visible = false;
   beep(880, 0.15);
   state = 'handdown'; phaseStart = performance.now();
@@ -426,14 +558,65 @@ function updateAngle(now) {
   lastDeg = realDeg; lastT = now;
 
   shownDeg = Math.min(MAX_SHOW_DEG, realDeg * gainOf());
-  const dir = v0.clone();
-  if (axis) dir.applyAxisAngle(axis, shownDeg / RAD);
-  const Wv = E.clone().addScaledVector(dir, foreLen);
   placeLimb(upperArm, E, shoulder);
-  placeLimb(forearm, E, Wv);
   elbowBall.position.copy(E);
-  handMesh.position.copy(Wv).addScaledVector(dir, 0.055);
-  handMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+
+  // 実際の手の関節が取れる場合：実際の手の形（指の動きも含む）を、
+  // 肘を中心に「表示角度 − 実際の角度」だけ回して描く
+  const live = kind === 'hand' && liveJoints();
+  if (live) {
+    _q.identity();
+    if (axis) _q.setFromAxisAngle(axis, (shownDeg - realDeg) / RAD);
+    for (const n of JOINTS) HP[n].sub(E).applyQuaternion(_q).add(E);
+  } else {
+    // 代替：静的な手の形を前腕の向きに合わせて置く
+    const dir = v0.clone();
+    if (axis) dir.applyAxisAngle(axis, shownDeg / RAD);
+    const lat = (axis ? axis.clone() : new THREE.Vector3().crossVectors(v0, UP)).normalize();
+    const thumbSide = cfg.side === 'right' ? lat.clone().negate() : lat.clone();
+    const dorsal = new THREE.Vector3().crossVectors(lat, dir).normalize();
+    const Wv = E.clone().addScaledVector(dir, foreLen);
+    for (const n of JOINTS) {
+      const [x, y, z] = STATIC_HAND[n];
+      HP[n].copy(Wv).addScaledVector(thumbSide, x).addScaledVector(dorsal, y).addScaledVector(dir, z);
+    }
+  }
+  drawHand();
+}
+
+function liveJoints() {
+  const p = inputs.find((q) => q.handedness === cfg.side);
+  if (!p || !p.hand.joints) return false;
+  for (const n of JOINTS) {
+    const j = p.hand.joints[n];
+    if (!j || !j.visible) return false;
+    j.getWorldPosition(HP[n]);
+  }
+  return true;
+}
+
+function drawHand() {
+  const W = HP['wrist'];
+  placeLimb(forearm, E, W);
+  wristBall.position.copy(W);
+  wristBall.quaternion.copy(forearm.quaternion);
+  for (const n in jointMesh) jointMesh[n].position.copy(HP[n]);
+  for (const b of boneMesh) {
+    const r = Math.min(jointR(b.a === 'wrist' ? b.b : b.a), jointR(b.b)) * b.k;
+    placeLimb(b.m, HP[b.a], HP[b.b]);
+    b.m.scale.x = b.m.scale.z = r;
+  }
+  // 手のひら：手首・示指〜小指の付け根から楕円体の位置と向きを決める
+  const ip = HP['index-finger-phalanx-proximal'], pp = HP['pinky-finger-phalanx-proximal'], mp = HP['middle-finger-phalanx-proximal'];
+  const xAx = new THREE.Vector3().subVectors(ip, pp);
+  const width = xAx.length(); xAx.normalize();
+  const zAx = new THREE.Vector3().subVectors(mp, W);
+  const len = zAx.length(); zAx.normalize();
+  const yAx = new THREE.Vector3().crossVectors(zAx, xAx).normalize();
+  xAx.crossVectors(yAx, zAx).normalize();
+  palm.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, yAx, zAx));
+  palm.position.copy(W).add(mp).multiplyScalar(0.5).addScaledVector(new THREE.Vector3().addVectors(ip, pp).multiplyScalar(0.5).sub(mp), 0.3);
+  palm.scale.set(width / 2 + 0.010, 0.014, len / 2 + 0.004);
 }
 
 // ---- 課題の進行 ----
@@ -526,7 +709,7 @@ function onSelect() {
 function onSessionEnd() {
   if (state === 'task' && trials.length) showResults();
   state = 'idle';
-  panel.visible = false; arm.visible = false; table.visible = false;
+  panel.visible = false; arm.visible = false; table.visible = false; monitor.visible = false; monitorPlaced = false;
   tipMarker.visible = false; wristMarker.visible = false;
   startBtn.disabled = false;
   if (trials.length) $('results').scrollIntoView({ behavior: 'smooth' });
@@ -611,6 +794,7 @@ renderer.setAnimationLoop(() => {
   else if (state === 'handdown') updateHanddown(now);
   else if (state === 'task') updateTask(now);
   else if (state === 'done') updateAngle(now);
+  renderMonitor();
   renderer.render(scene, camera);
 });
 </script>
